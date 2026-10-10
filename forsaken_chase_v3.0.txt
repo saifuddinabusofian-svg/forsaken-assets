@@ -2611,6 +2611,64 @@ local function InitTpSpawnSystem()
   -- Resolved asset URLs for the mode-toggle button (default vs cooldown state)
   local tpModeAsset, tpModeCdAsset = "", ""
 
+  -- Try an asset name, then fall back to the opposite extension case.
+  -- (The repo mixes .png and .PNG; e.g. Tp-to-spawn.png vs Near-or-no.PNG.)
+  local function TryTpAsset(fname)
+    if not fname or fname == "" then return "" end
+    local a = SafeAsset(ASSET_FOLDER .. fname)
+    if a ~= "" then return a end
+    local alt = tostring(fname):gsub("%.png$", ".PNG")
+    if alt == fname then alt = tostring(fname):gsub("%.PNG$", ".png") end
+    if alt ~= fname then
+      a = SafeAsset(ASSET_FOLDER .. alt)
+      if a ~= "" then return a end
+    end
+    return ""
+  end
+
+  -- Re-attempt loading the TP button images until they resolve. Fixes the
+  -- first-run timing race where EnsureAssets() is still downloading the PNGs
+  -- from GitHub when the buttons are first built (SafeAsset returns "" and the
+  -- icon never appears -- same class of bug the Adrenaline retry loop fixed).
+  -- Bounded so it stops once everything is loaded (or after ~60s of ticks).
+  local tpIconRetries = 0
+  local function EnsureTpIcons()
+    if tpIconRetries >= 120 then return end
+    local allLoaded = true
+    -- Base ability icon (Tp-to-spawn.png)
+    if TpSpawnBtnImg and TpSpawnBtnImg.Image == "" then
+      local a = TryTpAsset(tostring(CONFIG.TPSPAWN_IMAGE_FILE or "Tp-to-spawn.png"))
+      if a ~= "" then
+        TpSpawnBtnImg.Image = a
+        TpSpawnBtnImg.Visible = true
+        if TpSpawnBtn then TpSpawnBtn.Text = "" end
+      else
+        allLoaded = false
+      end
+    end
+    -- Cooldown frames (Tp-to-spawn-cd-1 .. cd-10)
+    for i, im in ipairs(TpSpawnCdImgs or {}) do
+      if im.Image == "" and CONFIG.TPSPAWN_CD_FILES and CONFIG.TPSPAWN_CD_FILES[i] then
+        local a = TryTpAsset(CONFIG.TPSPAWN_CD_FILES[i])
+        if a ~= "" then im.Image = a else allLoaded = false end
+      end
+    end
+    -- Mode-toggle icons (Near-or-no.PNG / Near-or-no-cd-1.PNG)
+    if tpModeAsset == "" then
+      local a = TryTpAsset(tostring(CONFIG.TPMODE_IMAGE_FILE or "Near-or-no.PNG"))
+      if a ~= "" then tpModeAsset = a else allLoaded = false end
+    end
+    if tpModeCdAsset == "" then
+      local a = TryTpAsset(tostring(CONFIG.TPMODE_CD_FILE or "Near-or-no-cd-1.PNG"))
+      if a ~= "" then tpModeCdAsset = a else allLoaded = false end
+    end
+    if allLoaded then
+      tpIconRetries = 120  -- everything resolved; stop retrying
+    else
+      tpIconRetries = tpIconRetries + 1
+    end
+  end
+
   -- Normalise the configured mode to a known value
   local function NormalizeMode(m)
     if m == "Random" then return "Random" end
@@ -2732,6 +2790,7 @@ local function InitTpSpawnSystem()
 
   -- Refresh the ability button (icon / cooldown frames / visibility)
   function RefreshTpSpawnBtn()
+    EnsureTpIcons()   -- lazily (re)load icons in case assets finished downloading
     if not TpSpawnBtn then return end
     SafePcall(function()
       local now = os.clock()
@@ -2779,6 +2838,7 @@ local function InitTpSpawnSystem()
 
   -- Refresh the mode-toggle button (Near-or-no vs Near-or-no-cd-1)
   function RefreshTpModeBtn()
+    EnsureTpIcons()   -- lazily (re)load icons in case assets finished downloading
     if not TpModeBtn then return end
     SafePcall(function()
       local onCooldown = os.clock() < (TpSpawnCooldownUntil or 0)
@@ -6084,6 +6144,16 @@ task.spawn(function()
 				end
 			end
 		end)
+	end
+end)
+
+-- Re-apply TP-to-spawn + mode button images once assets finish downloading
+-- (mirrors the Adrenaline retry loop above; fixes the first-run timing race)
+task.spawn(function()
+	for _ = 1, 10 do
+		task.wait(1)
+		SafePcall(function() RefreshTpSpawnBtn() end)
+		SafePcall(function() RefreshTpModeBtn() end)
 	end
 end)
 
